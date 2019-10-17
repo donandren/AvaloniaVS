@@ -154,6 +154,8 @@ namespace AvaloniaVS.Views
             set => SetValue(ViewProperty, value);
         }
 
+        public string DesignerTempPath { get; set; }
+
         /// <summary>
         /// Starts the designer.
         /// </summary>
@@ -203,6 +205,8 @@ namespace AvaloniaVS.Views
         /// </summary>
         public void Dispose()
         {
+            var alreadyDisposed = _disposed;
+
             _disposed = true;
 
             if (_editor?.TextView.TextBuffer is ITextBuffer2 oldBuffer)
@@ -215,11 +219,19 @@ namespace AvaloniaVS.Views
                 _editor.Close();
             }
 
+            var assemblyPath = SelectedTarget?.XamlAssembly;
+            var executablePath = SelectedTarget?.ExecutableAssembly;
+
             Process.FrameReceived -= FrameReceived;
 
             _throttle.Dispose();
             previewer.Dispose();
             Process.Dispose();
+
+            if (!alreadyDisposed && assemblyPath != null && executablePath != null)
+            {
+                _ = Task.Delay(100).ContinueWith(t => TryCleanDesignTempData(executablePath, assemblyPath));
+            }
         }
 
         protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
@@ -351,6 +363,14 @@ namespace AvaloniaVS.Views
 
             if (assemblyPath != null && executablePath != null)
             {
+                var d = TryPrepareDesignTempData(executablePath, assemblyPath);
+
+                if (!d.Equals(default((string, string))))
+                {
+                    assemblyPath = d.assemblyPath;
+                    executablePath = d.executablePath;
+                }
+
                 var buffer = _editor.TextView.TextBuffer;
                 var metadata = buffer.Properties.GetOrCreateSingletonProperty(
                     typeof(XamlBufferMetadata),
@@ -404,6 +424,111 @@ namespace AvaloniaVS.Views
             }
 
             Log.Logger.Verbose("Finished AvaloniaDesigner.StartProcessAsync()");
+        }
+
+        private (string executableDir, string assemblyDir) GetDesignTempDirs(string executablePath, string assemblyPath)
+        {
+            if (string.IsNullOrEmpty(DesignerTempPath))
+                return default((string, string));
+
+            //let's try use very short folder names as limit for directory path is 248 chars
+            var designerTempDir = Path.Combine(Directory.GetParent(Path.GetDirectoryName(executablePath)).FullName, DesignerTempPath);
+
+            var executableDirDesigner = $"{designerTempDir}";
+            var assemblyDirDesigner = $"{designerTempDir}_asm";
+
+            return (executableDirDesigner, assemblyDirDesigner);
+        }
+
+        private (string executablePath, string assemblyPath) TryPrepareDesignTempData(string executablePath, string assemblyPath)
+        {
+            try
+            {
+                Log.Logger.Verbose("Started AvaloniaDesigner.TryPrepareDesignTempData()");
+
+                void CopyFile(string src, string dst)
+                {
+                    var srcFile = new FileInfo(src);
+                    var dstFile = new FileInfo(dst);
+
+                    if (!Directory.Exists(dstFile.DirectoryName))
+                        Directory.CreateDirectory(dstFile.DirectoryName);
+
+                    if (srcFile.LastWriteTime > dstFile.LastWriteTime || !dstFile.Exists)
+                        File.Copy(srcFile.FullName, dstFile.FullName, true);
+                }
+
+                void CopyFolder(string src, string dst, string mask = "*.*", bool recursive = false)
+                {
+                    var opt = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+
+                    foreach (var sourceFile in Directory.GetFiles(src, mask, opt))
+                    {
+                        CopyFile(sourceFile, $"{dst}{sourceFile.Replace(src, "")}");
+                    }
+                }
+
+                var executableDir = Path.GetDirectoryName(executablePath);
+                var assemblyDir = Path.GetDirectoryName(assemblyPath);
+
+                var tmpDirs = GetDesignTempDirs(executablePath, assemblyPath);
+
+                if (!tmpDirs.Equals(default((string, string))))
+                {
+                    var executableDirDesigner = tmpDirs.executableDir;
+                    var assemblyDirDesigner = tmpDirs.assemblyDir;
+
+                    CopyFolder(executableDir, executableDirDesigner, recursive: true);
+                    CopyFile(assemblyPath, Path.Combine(tmpDirs.assemblyDir, Path.GetFileName(assemblyPath)));
+
+                    Log.Logger.Verbose("Copied assemblies to temp folders:{ExecutableDirDesigner},{AssemblyDirDesigner}", executableDirDesigner, assemblyDirDesigner);
+
+                    var executablePathDesign = Path.Combine(executableDirDesigner, Path.GetFileName(executablePath));
+                    var assemblyPathDesign = Path.Combine(assemblyDirDesigner, Path.GetFileName(assemblyPath));
+
+                    Log.Logger.Verbose("Finished AvaloniaDesigner.TryPrepareDesignTempFolder()");
+
+                    return (executablePathDesign, assemblyPathDesign);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Logger.Error(ex, "AvaloniaDesigner.TryPrepareDesignTempData() failed!");
+                ShowError("Prepare Design Time", $"Prepare Design Time Preview and Completion Failed:{ex.Message}");
+            }
+
+            return default((string, string));
+        }
+
+        private void TryCleanDesignTempData(string executablePath, string assemblyPath)
+        {
+            try
+            {
+                var tmpDirs = GetDesignTempDirs(executablePath, assemblyPath);
+
+                if (tmpDirs.Equals(default((string, string))))
+                    return;
+
+                void deletefile(string path)
+                {
+                    Log.Information("Cleaning temp file {Path}", path);
+                    File.Delete(path);
+                }
+
+                void cleandir(string path)
+                {
+                    Log.Information("Cleaning temp folder {Path}", path);
+                    Directory.Delete(path, true);
+                }
+
+                deletefile(Path.Combine(tmpDirs.assemblyDir, Path.GetFileName(assemblyPath)));
+
+                cleandir(tmpDirs.executableDir);
+            }
+            catch (Exception ex)
+            {
+                Log.Logger.Warning(ex, "AvaloniaDesigner.TryCleanDesignTempData() failed!");
+            }
         }
 
         private static async Task CreateCompletionMetadataAsync(
