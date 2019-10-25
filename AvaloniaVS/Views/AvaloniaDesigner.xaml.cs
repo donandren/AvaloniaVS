@@ -304,6 +304,8 @@ namespace AvaloniaVS.Views
                         .TargetAssembly;
                 }
 
+                var oldSelectedTarget = SelectedTarget;
+
                 Targets = (from project in projects
                            where IsValidTarget(project)
                            orderby project.Project != project, !project.IsStartupProject, project.Name
@@ -316,7 +318,7 @@ namespace AvaloniaVS.Views
                                XamlAssembly = GetXamlAssembly(output),
                            }).ToList();
 
-                SelectedTarget = Targets.FirstOrDefault();
+                SelectedTarget = Targets.FirstOrDefault(t => t.Name == oldSelectedTarget?.Name) ?? Targets.FirstOrDefault();
             }
             finally
             {
