@@ -64,7 +64,8 @@ namespace AvaloniaVS.Views
 
             base.Initialize();
             _serviceProvider = base.GetService(typeof(IServiceProvider)) as IServiceProvider;
-            (_editorWindow as IObjectWithSite)?.SetSite(_serviceProvider);
+            //breaks Enter to select from completion??? wtf
+            //(_editorWindow as IObjectWithSite)?.SetSite(_serviceProvider);
         }
 
         int IOleCommandTarget.Exec(ref Guid pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
